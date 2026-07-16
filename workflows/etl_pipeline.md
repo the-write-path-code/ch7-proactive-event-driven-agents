@@ -5,39 +5,45 @@ The Data Synchronization Pipeline (ETL) is responsible for taking raw Excel expo
 ## Workflow Diagram
 
 ```mermaid
-flowchart TD
-    Start([Manual Trigger or App Boot]) --> ReadExcel[Read CustomerData.xlsx and CaregiverData.xlsx]
+flowchart LR
+    subgraph P1["1. Ingest and Validate"]
+        direction TB
+        Start([Manual Trigger or App Boot]) --> ReadExcel[Read CustomerData.xlsx and CaregiverData.xlsx]
+        ReadExcel --> Validate{Validate Required Columns}
+        Validate -->|Missing| Abort([Abort Sync Show Error in UI])
+        Validate -->|Valid| FillOptional[Fill Missing Optional Columns with NA]
+        FillOptional --> Exclusions[Apply Hardcoded Name Exclusions]
+        Exclusions --> SurrogateKey[Compute Secure Hash Keys for Changes]
+    end
 
-    ReadExcel --> Validate{Validate Required Columns}
-    Validate -->|Missing| Abort([Abort Sync Show Error in UI])
-    Validate -->|Valid| FillOptional[Fill Missing Optional Columns with NA]
+    subgraph P2["2. Change Detection"]
+        direction TB
+        Compare{Compare with Existing DB}
+        Compare -->|New or Address Changed| GeocodeQueue[Add to Geocoding Queue]
+        Compare -->|No Address Change| Preserve[Preserve Existing H3 Index]
+    end
 
-    FillOptional --> Exclusions[Apply Hardcoded Name Exclusions]
+    subgraph P3["3. Geocoding Pipeline"]
+        direction TB
+        CheckCache{Check Local Geocode Cache}
+        CheckCache -->|Cached| FetchCache[Fetch Cached Lat Lng]
+        CheckCache -->|Not Cached| CallGeocodio[Batch Call Geocodio API Address ONLY]
+        CallGeocodio --> SaveCache[Save Lat Lng to Cache]
+        SaveCache --> FetchCache
+        FetchCache --> H3Conversion[Convert to H3 Hex Index Res 8]
+        H3Conversion --> Discard[Discard Raw Coordinates Never Store Lat Lng]
+    end
 
-    Exclusions --> SurrogateKey[Compute Secure Hash Keys for Changes]
+    subgraph P4["4. Database Rebuild"]
+        direction TB
+        RebuildDB[Rebuild SQLite Tables clients and staff]
+        RebuildDB --> RebuildView[Rebuild vw_staff_capacity Calculating Available Hours]
+        RebuildView --> End([Sync Complete Update UI Summary])
+    end
 
-    SurrogateKey --> Compare{Compare with Existing DB}
-
-    Compare -->|New or Address Changed| GeocodeQueue[Add to Geocoding Queue]
-    Compare -->|Existing No Address Change| Preserve[Preserve Existing H3 Index]
-
-    GeocodeQueue --> CheckCache{Check Local Geocode Cache}
-
-    CheckCache -->|Cached| FetchCache[Fetch Cached Lat Lng]
-    CheckCache -->|Not Cached| CallGeocodio[Batch Call Geocodio API Send Address ONLY]
-
-    CallGeocodio --> SaveCache[Save Lat Lng to Cache]
-    SaveCache --> FetchCache
-
-    FetchCache --> H3Conversion[Convert Lat Lng instantly to H3 Hex Index Res 8]
-
-    H3Conversion --> Discard[Discard Raw Coordinates Never Store Lat Lng]
-    Preserve --> Discard
-
-    Discard --> RebuildDB[Rebuild SQLite Tables clients and staff]
-    RebuildDB --> RebuildView[Rebuild vw_staff_capacity Calculating Available Hours]
-
-    RebuildView --> End([Sync Complete Update UI Summary])
+    P1 --> P2
+    P2 --> P3
+    P3 --> P4
 
     style Start fill:#e1f5e1
     style End fill:#e1f5e1
